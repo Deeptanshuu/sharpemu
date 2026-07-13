@@ -10,6 +10,9 @@
 //   [0] v_fmac_f32   -> fma(1.5f, 2.25f, 10.0f)
 //   [1] v_mul_hi_i32 -> high 32 bits of (int)0x7FFFFFFF * (int)0x00010003
 //   [2] v_mul_lo_i32 -> low  32 bits of the same product
+// It then zeroes EXEC and issues a fourth buffer_store_dword to offset 12;
+// the translator's exec guard must suppress it, so words[3] (and everything
+// after it) has to keep the sentinel the CPU prefilled.
 //
 // Creating the compute pipeline doubles as a driver-acceptance check for the
 // emitted SPIR-V; the dispatch then verifies the arithmetic numerically.

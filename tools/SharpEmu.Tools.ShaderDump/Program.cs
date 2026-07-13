@@ -39,15 +39,24 @@ const ulong ProgramAddress = 0x100000;
         0xD56C0005, 0x00020501, // v_mul_hi_i32 v5, v1, v2
         0xBF810000,             // s_endpgm
     ]),
-    ("sopp", [
+    // True scheduling hints: decode lands with #108, so this program reports
+    // unknown-sopp failures until then and passes afterwards.
+    ("sopp-hints", [
         0xBFA10001,             // s_clause 0x1
         0xBFA30000,             // s_waitcnt_depctr 0x0
+        0xBF810000,             // s_endpgm
+    ]),
+    // Mode-setting SOPP instructions that #108 intentionally does not cover;
+    // this program is expected to keep reporting a decode gap.
+    ("sopp-modes", [
         0xBFA40000,             // s_round_mode 0x0
         0xBFA50000,             // s_denorm_mode 0x0
         0xBF810000,             // s_endpgm
     ]),
     // Executable end-to-end test: compute with real ALU instructions, then
     // buffer_store_dword three results to guestBuffers[0] at offsets 0/4/8.
+    // Finally EXEC is zeroed and a fourth store to offset 12 is issued; the
+    // translator's exec guard must suppress it, leaving the sentinel intact.
     ("exec", [
         0x7E0002FF, 0x3FC00000, // v_mov_b32 v0, 1.5f
         0x7E0202FF, 0x40100000, // v_mov_b32 v1, 2.25f
@@ -60,6 +69,8 @@ const ulong ProgramAddress = 0x100000;
         0xE0700000, 0x80020200, // buffer_store_dword v2, off, s[8:11], 0
         0xE0700004, 0x80020500, // buffer_store_dword v5, off, s[8:11], 0 offset:4
         0xE0700008, 0x80020600, // buffer_store_dword v6, off, s[8:11], 0 offset:8
+        0xBEFE0480,             // s_mov_b64 exec, 0
+        0xE070000C, 0x80020000, // buffer_store_dword v0, off, s[8:11], 0 offset:12 (masked)
         0xBF810000,             // s_endpgm
     ]),
 ];
