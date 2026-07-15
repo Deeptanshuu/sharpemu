@@ -6829,9 +6829,14 @@ internal static unsafe class VulkanVideoPresenter
 
         private static SurfaceFormatKHR ChooseSurfaceFormat(IReadOnlyList<SurfaceFormatKHR> formats)
         {
+            // Guest display buffers hold sRGB-encoded bytes in UNORM images, and the
+            // present blit copies them through without a colorspace conversion. A
+            // UNORM swapchain passes those bytes to the display as-is; an SRGB
+            // swapchain makes the blit treat them as linear and re-encode on write,
+            // which double-gammas the frame (visibly washed-out output).
             foreach (var format in formats)
             {
-                if (format.Format == Format.B8G8R8A8Srgb &&
+                if (format.Format == Format.B8G8R8A8Unorm &&
                     format.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr)
                 {
                     return format;
@@ -6840,7 +6845,7 @@ internal static unsafe class VulkanVideoPresenter
 
             foreach (var format in formats)
             {
-                if (format.Format == Format.B8G8R8A8Unorm &&
+                if (format.Format == Format.B8G8R8A8Srgb &&
                     format.ColorSpace == ColorSpaceKHR.SpaceSrgbNonlinearKhr)
                 {
                     return format;
