@@ -547,6 +547,14 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 
 	private int _readyGuestThreadCount;
 
+	// Dedicated dispatcher for woken guest threads. Wake paths signal instead of
+	// pumping inline, so the waker never pays for host-thread starts or Pump's
+	// fairness sleep; the wait timeout doubles as the backstop that fires expired
+	// timed waits (Pump wakes those on entry).
+	private readonly AutoResetEvent _guestDispatchSignal = new AutoResetEvent(false);
+	private Thread? _guestDispatcherThread;
+	private int _guestDispatcherStarted;
+
 	private readonly Dictionary<ulong, GuestThreadState> _guestThreads = new Dictionary<ulong, GuestThreadState>();
 
 	// pthread_cond_signal is wake-one, and many UE worker threads intentionally
@@ -2709,6 +2717,7 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 			$"[LOADER][INFO] Scheduled guest thread '{thread.Name}' handle=0x{thread.ThreadHandle:X16} " +
 			$"entry=0x{thread.EntryPoint:X16} arg=0x{thread.Argument:X16} priority={thread.Priority} " +
 			$"host_priority={MapGuestThreadPriority(thread.Priority)} affinity=0x{thread.AffinityMask:X}");
+		StartGuestDispatcher();
 		Pump(creatorContext, "pthread_create");
 		return true;
 	}
@@ -2925,14 +2934,47 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 		// A woken thread only runs when something pumps the ready queue, and
 		// after thread creation stops the remaining Pump call sites can all go
 		// quiet (the primary guest parks host-side and continuously running
-		// guests never re-enter a pumping import). Dispatch here so a wake is
-		// never left sitting Ready in the queue indefinitely.
-		if (wakeCount != 0 && _cpuContext is { } wakeContext)
+		// guests never re-enter a pumping import). Hand the dispatch to the
+		// dedicated dispatcher so the waker only pays for a signal.
+		if (wakeCount != 0)
 		{
-			Pump(wakeContext, "wake");
+			_guestDispatchSignal.Set();
 		}
 
 		return wakeCount;
+	}
+
+	private void StartGuestDispatcher()
+	{
+		if (Interlocked.Exchange(ref _guestDispatcherStarted, 1) != 0)
+		{
+			return;
+		}
+
+		_guestDispatcherThread = new Thread(() =>
+		{
+			while (!_guestTeardownRequested)
+			{
+				// Timeout doubles as the liveness backstop: Pump fires expired
+				// timed waits on entry even when no explicit wake was signalled.
+				_guestDispatchSignal.WaitOne(200);
+				if (_guestTeardownRequested)
+				{
+					return;
+				}
+
+				if (_cpuContext is { } context)
+				{
+					Pump(context, "dispatcher");
+				}
+			}
+		})
+		{
+			IsBackground = true,
+			Name = "SharpEmu-GuestDispatcher",
+			Priority = ThreadPriority.AboveNormal,
+		};
+		_guestDispatcherThread.Start();
 	}
 
 	public IReadOnlyList<GuestThreadSnapshot> SnapshotThreads()
@@ -4562,15 +4604,6 @@ public sealed unsafe partial class DirectExecutionBackend : INativeCpuBackend, I
 				if (_stallWatchdogStop)
 				{
 					break;
-				}
-				// Liveness backstop: expired timed waits and missed wake-ups only
-				// dispatch when something pumps, and overall import progress from
-				// continuously running guests keeps the stall path below from ever
-				// firing. Bound the scheduling latency of a Ready thread to one
-				// watchdog tick instead.
-				if (HasReadyGuestThread() && _cpuContext is { } tickContext)
-				{
-					Pump(tickContext, "watchdog_tick");
 				}
 				long num2 = Stopwatch.GetTimestamp() - Volatile.Read(ref _lastProgressTimestamp);
 				if (num2 < num)
